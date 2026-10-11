@@ -92,7 +92,7 @@ function defaultState() {
       name: '',
       medTime: '22:00',
       checkinTime: '21:30',
-      scalesReminder: true,
+      push: { enabled: false, med: true, checkin: true, scales: true, hxFollowup: true },
       tags: [...TAGS_DEFAULT],
       lastBackup: null,
     },
@@ -105,10 +105,13 @@ function defaultState() {
 let S;
 try { S = JSON.parse(localStorage.getItem(STORE)) || defaultState(); } catch { S = defaultState(); }
 S.settings = { ...defaultState().settings, ...S.settings };
+S.settings.push = { ...defaultState().settings.push, ...S.settings.push };
+if (!S.deviceId) S.deviceId = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
 function save() {
   try { localStorage.setItem(STORE, JSON.stringify(S)); }
   catch { toast('Не удалось сохранить — память переполнена'); }
+  if (typeof schedulePushSync === 'function') schedulePushSync();
 }
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
@@ -542,16 +545,23 @@ function renderMore() {
     <div class="row" style="margin:10px 0"><button class="btn sm" data-act="scale" data-type="PHQ9">PHQ-9 · депрессия</button><button class="btn sm" data-act="scale" data-type="GAD7">GAD-7 · тревога</button></div>
     ${scRows.length ? `<table class="mini"><tr><th>Дата</th><th>Шкала</th><th>Балл</th><th>Уровень</th><th></th></tr>${scRows.map((s) => `<tr><td>${fmtShort(s.date)}</td><td>${SCALES[s.type].short}</td><td class="num"><b>${s.total}</b></td><td>${scaleLevel(s.type, s.total)}</td><td><button class="link small" data-act="scale-del" data-id="${s.id}">Удалить</button></td></tr>`).join('')}</table>` : ''}</div>`;
 
-  h += `<div class="card"><h2>Напоминания</h2>
-    <p class="sub">Напоминания добавляются в стандартный Календарь iPhone. Они приходят, даже если приложение закрыто, а текст учитывает схему доз.</p>
-    <div class="row"><div class="grow"><label class="lbl">Таблетка</label><input type="time" class="input" data-input="set:medTime" value="${esc(st.medTime)}"></div>
-    <div class="grow"><label class="lbl">Отметить день</label><input type="time" class="input" data-input="set:checkinTime" value="${esc(st.checkinTime)}"></div></div>
-    <label class="check"><input type="checkbox" data-input="set:scalesReminder" ${st.scalesReminder ? 'checked' : ''}> Раз в 2 недели напоминать про опросники</label>
-    <button class="btn block" style="margin-top:12px" data-act="ics">Добавить в Календарь</button>
-    <details style="margin-top:10px"><summary class="muted">Как это работает</summary><div class="small" style="margin-top:6px;color:var(--ink2)">
-      В меню выберите «Сохранить в Файлах», затем откройте приложение «Файлы», нажмите на файл «Напоминания» → «Добавить все». Лучше выбрать отдельный календарь, например «Лечение»: тогда, если время изменится, его можно удалить целиком в настройках Календаря и добавить заново.<br><br>
-      
-      Ещё один вариант для таблетки: приложение «Здоровье» → «Лекарства». Оно умеет напоминать и отмечать приём.</div></details></div>`;
+  const ps = st.push;
+  h += `<div class="card"><h2>Напоминания</h2>`;
+  if (!ps.enabled) {
+    h += `<p class="sub">Уведомления приходят на телефон, даже когда приложение закрыто. Если таблетка уже отмечена, напоминание о ней не придёт.</p>
+      ${isStandalone() ? '' : '<div class="card warm small" style="margin:8px 0">Откройте приложение с иконки на экране «Домой». В Safari уведомления не работают.</div>'}
+      <button class="btn block" style="margin-top:8px" data-act="push-on">Включить уведомления</button>`;
+  } else {
+    h += `<div class="row"><div class="grow"><label class="lbl">Таблетка</label><input type="time" class="input" data-input="set:medTime" value="${esc(st.medTime)}"></div>
+      <div class="grow"><label class="lbl">Отметить день</label><input type="time" class="input" data-input="set:checkinTime" value="${esc(st.checkinTime)}"></div></div>
+      <label class="check"><input type="checkbox" data-input="push:med" ${ps.med ? 'checked' : ''}> Таблетка (с дозой на этот день)</label>
+      <label class="check"><input type="checkbox" data-input="push:checkin" ${ps.checkin ? 'checked' : ''}> «Как прошёл день?»</label>
+      <label class="check"><input type="checkbox" data-input="push:scales" ${ps.scales ? 'checked' : ''}> Опросники раз в 2 недели</label>
+      <label class="check"><input type="checkbox" data-input="push:hxFollowup" ${ps.hxFollowup ? 'checked' : ''}> Через час после гидроксизина спросить, помог ли</label>
+      <p class="muted" style="margin-top:10px">Если таблетка уже отмечена или день уже заполнен, напоминание не придёт.</p>
+      <div class="row" style="margin-top:10px"><button class="btn quiet sm" data-act="push-test">Проверить</button><button class="btn ghost sm" data-act="push-off">Выключить</button></div>`;
+  }
+  h += `</div>`;
 
   const sched = [...st.schedule].sort((a, b) => a.day - b.day);
   h += `<div class="card"><h2>Лечение</h2>
@@ -642,9 +652,9 @@ function openHx(existing) {
     input: (el) => { x[el.dataset.sheetInput] = el.value; },
     'hx-save': () => {
       if (!x.ts) return;
-      S.hx = S.hx.filter((h) => h.id !== x.id); S.hx.push(x); save(); closeSheet(); toast('Сохранено');
+      S.hx = S.hx.filter((h) => h.id !== x.id); S.hx.push(x); save(); pushLater(x); closeSheet(); toast('Сохранено');
     },
-    'hx-del': () => { if (confirm('Удалить запись?')) { S.hx = S.hx.filter((h) => h.id !== x.id); save(); closeSheet(); } },
+    'hx-del': () => { if (confirm('Удалить запись?')) { S.hx = S.hx.filter((h) => h.id !== x.id); save(); pushLater({ ...x, after: 0 }); closeSheet(); } },
   };
   openSheet(draw(), () => { sheetCtx = null; render(); });
 }
@@ -658,7 +668,7 @@ function openHxAfter(x) {
   sheetCtx = {
     'hxa-set': (el) => { after = +el.dataset.val; const sh = $('.sheet'), top = sh.scrollTop; sh.innerHTML = '<div class="grab"></div>' + draw(); sh.scrollTop = top; },
     input: (el) => { sleepy = el.checked; },
-    'hxa-save': () => { x.after = after; x.afterTs = nowStamp(); x.sleepy = sleepy; save(); closeSheet(); toast('Сохранено'); },
+    'hxa-save': () => { x.after = after; x.afterTs = nowStamp(); x.sleepy = sleepy; save(); pushLater(x); closeSheet(); toast('Сохранено'); },
   };
   openSheet(draw(), () => { sheetCtx = null; render(); });
 }
@@ -724,43 +734,60 @@ async function shareFile(blob, name, type) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-function icsFold(line) {
-  const enc = new TextEncoder(); const out = []; let cur = '', bytes = 0;
-  for (const ch of line) {
-    const b = enc.encode(ch).length;
-    if (bytes + b > 73) { out.push(cur); cur = ' '; bytes = 1; }
-    cur += ch; bytes += b;
-  }
-  out.push(cur); return out.join('\r\n');
-}
-function buildIcs() {
-  const st = S.settings, t = todayKey();
-  const icsEsc = (s) => s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
-  const dt = (k, tm) => `${k.replace(/-/g, '')}T${tm.replace(':', '')}00`;
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
-  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Sostoyanie//RU', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:Лечение'];
-  const ev = (id, start, time, summary, desc, rrule) => {
-    L.push('BEGIN:VEVENT', `UID:${id}@sostoyanie`, `DTSTAMP:${stamp}`, `DTSTART:${dt(start, time)}`, `DURATION:PT10M`, `SUMMARY:${icsEsc(summary)}`, `DESCRIPTION:${icsEsc(desc)}`);
-    if (rrule) L.push(`RRULE:${rrule}`);
-    L.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsEsc(summary)}`, 'TRIGGER:PT0M', 'END:VALARM', 'END:VEVENT');
+/* ================= Уведомления ================= */
+const PUSH_URL = 'https://sostoyanie-push.sostoyanie-app.workers.dev';
+const VAPID_PUBLIC = 'BKDXuYhPjCH9BX51mV1v3awgcDBB7BeEcQDEezzHJ1Up1pk-2LdVRSS7GSRmuXcHeIijj6PcOMAKgGCtsP4G91c';
+const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+const b64uToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const pushPost = (path, body) => fetch(PUSH_URL + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: S.deviceId, ...body }) }).then((r) => r.json());
+
+function pushState() {
+  const st = S.settings, t = todayKey(), d = day(t);
+  const lasts = Object.keys(SCALES).map((ty) => lastScale(ty)?.date).filter(Boolean).sort();
+  return {
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    med: st.push.med, checkin: st.push.checkin, scales: st.push.scales, hxFollowup: st.push.hxFollowup,
+    medTime: st.medTime, checkinTime: st.checkinTime, start: st.start, schedule: st.schedule, tabletMg: st.tabletMg,
+    medName: st.medName.split(' (')[0],
+    lastMedDay: d.med ? t : null,
+    lastCheckinDay: Object.keys(METRICS).some((f) => d[f] != null) ? t : null,
+    nextScaleDate: lasts.length ? addDays(lasts[0], 14) : addDays(st.start, 14),
   };
-  const sched = [...st.schedule].sort((a, b) => a.day - b.day);
-  sched.forEach((s, i) => {
-    const s0 = stepStart(s), next = sched[i + 1], end = next ? addDays(stepStart(next), -1) : null;
-    if (end && end < t) return;
-    const begin = s0 < t ? t : s0;
-    ev(`med-${i}-${s0}`, begin, st.medTime, `💊 ${st.medName.split(' (')[0]}: ${doseText(s.dose)}`, 'Отметьте приём в приложении «Состояние».',
-      `FREQ=DAILY${end ? `;UNTIL=${end.replace(/-/g, '')}T235959` : ''}`);
-  });
-  ev(`checkin-${t}`, t, st.checkinTime, '📝 Как прошёл день?', 'Отметьте самочувствие в приложении «Состояние» — меньше минуты.', 'FREQ=DAILY');
-  if (st.scalesReminder) {
-    const lasts = Object.keys(SCALES).map((ty) => lastScale(ty)?.date).filter(Boolean).sort();
-    let next = lasts.length ? addDays(lasts[0], 14) : addDays(st.start, 14);
-    if (next < t) next = t;
-    ev(`scales-${next}`, next, st.checkinTime, '📋 Опросники PHQ-9 и GAD-7', 'Раз в 2 недели — для динамики и отчёта врачу.', 'FREQ=DAILY;INTERVAL=14');
-  }
-  L.push('END:VCALENDAR');
-  return L.map(icsFold).join('\r\n') + '\r\n';
+}
+let pushTimer;
+function schedulePushSync() {
+  if (!S.settings.push.enabled) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => pushPost('/sync', pushState()).catch(() => {}), 1200);
+}
+async function pushSubscribe() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(VAPID_PUBLIC) }));
+  const r = await pushPost('/sync', { ...pushState(), sub: sub.toJSON() });
+  if (!r.ok) throw new Error(r.error || 'сервер не ответил');
+}
+async function pushEnable() {
+  if (!isStandalone()) { alert('Откройте приложение с иконки на экране «Домой» — в Safari уведомления не работают.'); return; }
+  if (!('Notification' in window) || !('PushManager' in window) || !('serviceWorker' in navigator)) { alert('Уведомления требуют iOS 16.4 или новее.'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { alert('Уведомления запрещены. Разрешить можно в Настройках iPhone → Уведомления → Состояние.'); return; }
+  try {
+    await pushSubscribe();
+    S.settings.push.enabled = true; save(); render(); toast('Уведомления включены');
+  } catch (e) { alert('Не получилось включить: ' + e.message); }
+}
+// При каждом открытии обновляем подписку (iOS иногда её меняет)
+async function pushRefresh() {
+  if (!S.settings.push.enabled || !('serviceWorker' in navigator) || typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+  try { await pushSubscribe(); } catch {}
+}
+function pushLater(x) {
+  if (!S.settings.push.enabled) return;
+  const at = x.after == null && S.settings.push.hxFollowup ? new Date(x.ts).getTime() + 60 * 60000 : null;
+  pushPost('/later', at && at > Date.now()
+    ? { key: x.id, at, title: 'Как вы сейчас?', body: 'Прошёл час после гидроксизина. Отметьте, помог ли.' }
+    : { key: x.id }).catch(() => {});
 }
 
 /* ================= Рендер и события ================= */
@@ -828,14 +855,17 @@ const actions = {
     if (sorted.length <= 1) return;
     sorted.splice(+el.dataset.i, 1); S.settings.schedule = sorted; save(); render();
   },
-  ics: () => {
-    const blob = new Blob([buildIcs()], { type: 'text/calendar;charset=utf-8' });
-    shareFile(blob, 'Напоминания.ics', 'text/calendar').then(() => openSheet(sheetHead('Последний шаг') + `
-      <ol class="sub" style="padding-left:20px;line-height:1.6">
-        <li>Если ещё не сохранили, нажмите «Добавить в Календарь» ещё раз и выберите <b>«Сохранить в Файлах»</b>.</li>
-        <li>Откройте приложение <b>«Файлы»</b> и нажмите на файл <b>«Напоминания»</b>.</li>
-        <li>Нажмите <b>«Добавить все»</b> и выберите календарь, лучше новый «Лечение».</li></ol>
-      <button class="btn block" data-act="close">Понятно</button>`));
+  'push-on': () => pushEnable(),
+  'push-test': (el) => {
+    el.disabled = true;
+    pushPost('/test', {}).then((r) => toast(r.ok ? 'Отправлено — проверьте уведомление' : 'Не дошло, код ' + (r.status || r.error)))
+      .catch(() => toast('Нет связи с сервером')).finally(() => { el.disabled = false; });
+  },
+  'push-off': async () => {
+    S.settings.push.enabled = false; save(); render();
+    pushPost('/unsubscribe', {}).catch(() => {});
+    try { const reg = await navigator.serviceWorker.ready; const sub = await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch {}
+    toast('Уведомления выключены');
   },
   backup: async () => {
     const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
@@ -868,6 +898,7 @@ function onInput(e) {
   if (f === 'forDoctor') { setDay(ui.date, { forDoctor: el.checked || null }); toast('Сохранено'); }
   else if (f === 'medtime') { const m = day(ui.date).med; if (m && el.value) setDay(ui.date, { med: { ...m, t: el.value } }); }
   else if (f === 'smooth') { ui.smooth = el.checked; render(); }
+  else if (f.startsWith('push:')) { S.settings.push[f.slice(5)] = el.checked; save(); toast('Сохранено'); }
   else if (f.startsWith('set:')) {
     const key = f.slice(4);
     if (el.type === 'checkbox') S.settings[key] = el.checked;
@@ -884,7 +915,9 @@ function onInput(e) {
       const data = JSON.parse(txt);
       if (!data || !data.settings || !data.days) throw new Error('bad');
       if (!confirm('Заменить текущие данные данными из копии?')) return;
-      S = data; S.settings = { ...defaultState().settings, ...S.settings }; save(); render(); toast('Восстановлено');
+      S = data; S.settings = { ...defaultState().settings, ...S.settings };
+S.settings.push = { ...defaultState().settings.push, ...S.settings.push };
+if (!S.deviceId) S.deviceId = Math.random().toString(36).slice(2) + Date.now().toString(36); save(); render(); toast('Восстановлено');
     }).catch(() => toast('Это не похоже на файл копии'));
   }
 }
@@ -901,4 +934,4 @@ let sessionDate = todayKey();
 
 render();
 if (!S.onboarded) openOnboarding();
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').then(pushRefresh).catch(() => {});
