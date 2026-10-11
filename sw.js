@@ -1,5 +1,5 @@
 // Офлайн-режим: приложение целиком кэшируется на телефоне.
-const CACHE = 'sostoyanie-v1';
+const CACHE = 'sostoyanie-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'charts.js', 'report.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

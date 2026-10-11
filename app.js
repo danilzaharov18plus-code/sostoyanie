@@ -59,12 +59,16 @@ const scaleLevel = (type, total) => SCALES[type].levels.find(([m]) => total <= m
 /* ================= Даты ================= */
 const pad = (n) => String(n).padStart(2, '0');
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const todayKey = () => keyOf(new Date());
+// «День» заканчивается в 4 утра: таблетка перед сном после полуночи относится к вечеру.
+const DAY_SHIFT_H = 4;
+const todayKey = () => keyOf(new Date(Date.now() - DAY_SHIFT_H * 3600000));
+const realTodayKey = () => keyOf(new Date());
+const hxDay = (h) => keyOf(new Date(new Date(h.ts).getTime() - DAY_SHIFT_H * 3600000));
 const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d, 12); };
 const addDays = (k, n) => { const d = parseKey(k); d.setDate(d.getDate() + n); return keyOf(d); };
 const diffDays = (a, b) => Math.round((parseKey(a) - parseKey(b)) / 86400000);
 const nowTime = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-const nowStamp = () => `${todayKey()}T${nowTime()}`;
+const nowStamp = () => `${realTodayKey()}T${nowTime()}`;
 const fmtShort = (k) => { const d = parseKey(k); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`; };
 const fmtFull = (k) => { const d = parseKey(k); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`; };
 const fmtLong = (k) => parseKey(k).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
@@ -147,11 +151,11 @@ function setDay(k, patch) {
   if (Object.keys(d).length) S.days[k] = d; else delete S.days[k];
   save();
 }
-const hxOn = (k) => S.hx.filter((h) => h.ts.slice(0, 10) === k).sort((a, b) => a.ts.localeCompare(b.ts));
+const hxOn = (k) => S.hx.filter((h) => hxDay(h) === k).sort((a, b) => a.ts.localeCompare(b.ts));
 const lastScale = (type) => S.scales.filter((s) => s.type === type).sort((a, b) => b.date.localeCompare(a.date))[0];
 
 function earliestKey() {
-  const keys = [S.settings.start, ...Object.keys(S.days), ...S.hx.map((h) => h.ts.slice(0, 10)), ...S.scales.map((s) => s.date)];
+  const keys = [S.settings.start, ...Object.keys(S.days), ...S.hx.map((h) => hxDay(h)), ...S.scales.map((s) => s.date)];
   return keys.sort()[0];
 }
 
@@ -215,7 +219,7 @@ function insights(keys) {
   tagEffects.sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 3).forEach((t) => {
     out.push(`В дни с меткой «${t.tag}» (${t.n} ${plural(t.n, 'день', 'дня', 'дней')}) настроение ${t.d > 0 ? 'выше' : 'ниже'} в среднем на ${r1(Math.abs(t.d))}.`);
   });
-  const hx = S.hx.filter((h) => h.after != null && keys.includes(h.ts.slice(0, 10)));
+  const hx = S.hx.filter((h) => h.after != null && keys.includes(hxDay(h)));
   if (hx.length >= 2) {
     out.push(`Гидроксизин: тревога в среднем снижалась с ${r1(mean(hx.map((h) => h.before)))} до ${r1(mean(hx.map((h) => h.after)))} (${hx.length} ${plural(hx.length, 'случай', 'случая', 'случаев')} с оценкой после).`);
   }
@@ -402,7 +406,7 @@ function hxWeeks(keys) {
   const weeks = [];
   for (let i = 0; i < keys.length; i += 7) {
     const wk = keys.slice(i, i + 7);
-    weeks.push({ k: wk[0], end: wk[wk.length - 1], n: S.hx.filter((h) => wk.includes(h.ts.slice(0, 10))).length });
+    weeks.push({ k: wk[0], end: wk[wk.length - 1], n: S.hx.filter((h) => wk.includes(hxDay(h))).length });
   }
   return weeks;
 }
@@ -436,7 +440,7 @@ function renderStats() {
   tiles.push(`<div class="tile"><div class="k">Сон</div><div class="v">${sl == null ? '—' : r1(sl) + ' ч'}</div><div class="d">среднее за 7 дней</div></div>`);
   const ad = adherence(keys[0], keys[keys.length - 1]);
   tiles.push(`<div class="tile"><div class="k">Таблетки</div><div class="v">${ad.taken}/${ad.total}</div><div class="d">дней с отметкой о приёме</div></div>`);
-  const hxN = S.hx.filter((x) => keys.includes(x.ts.slice(0, 10))).length;
+  const hxN = S.hx.filter((x) => keys.includes(hxDay(x))).length;
   tiles.push(`<div class="tile"><div class="k">Гидроксизин</div><div class="v">${hxN}</div><div class="d">${plural(hxN, 'раз', 'раза', 'раз')} за период</div></div>`);
   h += `<div class="tiles">${tiles.join('')}</div>`;
 
@@ -545,8 +549,8 @@ function renderMore() {
     <label class="check"><input type="checkbox" data-input="set:scalesReminder" ${st.scalesReminder ? 'checked' : ''}> Раз в 2 недели напоминать про опросники</label>
     <button class="btn block" style="margin-top:12px" data-act="ics">Добавить в Календарь</button>
     <details style="margin-top:10px"><summary class="muted">Как это работает</summary><div class="small" style="margin-top:6px;color:var(--ink2)">
-      Откроется файл с событиями. Нажмите «Добавить все». Лучше выбрать отдельный календарь, например «Лечение»: тогда, если время изменится, его можно удалить целиком в настройках Календаря и добавить заново.<br><br>
-      Если файл не открылся сам, сохраните его в «Файлы» и откройте оттуда.<br><br>
+      В меню выберите «Сохранить в Файлах», затем откройте приложение «Файлы», нажмите на файл «Напоминания» → «Добавить все». Лучше выбрать отдельный календарь, например «Лечение»: тогда, если время изменится, его можно удалить целиком в настройках Календаря и добавить заново.<br><br>
+      
       Ещё один вариант для таблетки: приложение «Здоровье» → «Лекарства». Оно умеет напоминать и отмечать приём.</div></details></div>`;
 
   const sched = [...st.schedule].sort((a, b) => a.day - b.day);
@@ -826,7 +830,12 @@ const actions = {
   },
   ics: () => {
     const blob = new Blob([buildIcs()], { type: 'text/calendar;charset=utf-8' });
-    shareFile(blob, 'Напоминания.ics', 'text/calendar');
+    shareFile(blob, 'Напоминания.ics', 'text/calendar').then(() => openSheet(sheetHead('Последний шаг') + `
+      <ol class="sub" style="padding-left:20px;line-height:1.6">
+        <li>Если ещё не сохранили, нажмите «Добавить в Календарь» ещё раз и выберите <b>«Сохранить в Файлах»</b>.</li>
+        <li>Откройте приложение <b>«Файлы»</b> и нажмите на файл <b>«Напоминания»</b>.</li>
+        <li>Нажмите <b>«Добавить все»</b> и выберите календарь, лучше новый «Лечение».</li></ol>
+      <button class="btn block" data-act="close">Понятно</button>`));
   },
   backup: async () => {
     const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
